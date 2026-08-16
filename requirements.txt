@@ -1,0 +1,4 @@
+gradio
+openai
+pymilvus[milvus_lite]
+sentence-transformers
