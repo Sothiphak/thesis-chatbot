@@ -127,8 +127,6 @@ footer { display: none !important; }
 """
 
 with gr.Blocks(
-    theme=gr.themes.Soft(primary_hue="teal", secondary_hue="cyan"),
-    css=CUSTOM_CSS,
     title="Sovereign Khmer RAG Chatbot",
 ) as demo:
 
@@ -149,12 +147,7 @@ with gr.Blocks(
         elem_classes="model-radio",
     )
 
-    chatbot = gr.Chatbot(
-        height=460,
-        show_copy_button=True,
-        avatar_images=(None, "🤖"),
-        bubble_full_width=False,
-    )
+    chatbot = gr.Chatbot(height=460)
 
     with gr.Row():
         msg = gr.Textbox(
@@ -202,4 +195,9 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    demo.launch(server_name="0.0.0.0", server_port=port)
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=port,
+        theme=gr.themes.Soft(primary_hue="teal", secondary_hue="cyan"),
+        css=CUSTOM_CSS,
+    )
