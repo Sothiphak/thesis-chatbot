@@ -144,7 +144,7 @@ with gr.Blocks(
         elem_classes="model-radio",
     )
 
-    chatbot = gr.Chatbot(height=460, type="messages")
+    chatbot = gr.Chatbot(height=460)
 
     with gr.Row():
         msg = gr.Textbox(
