@@ -40,6 +40,28 @@ MODEL_DISPLAY_MAP = {
     "Enhanced (Fine-tuned)": "sealion-ft",
 }
 
+# --- Relevance gate ---
+# Fixes a real, confirmed bug: without this, an off-topic question (e.g. "what's
+# the best Khmer food?") still runs the full RAG pipeline, retrieves the
+# nearest-but-irrelevant HR/IT chunks anyway, and the model fabricates an
+# answer while citing those unrelated documents as its "source." Gating on
+# the top retrieval score catches this BEFORE generation -- so it's also
+# faster for off-topic queries, not just more correct, since no LLM call
+# happens at all on the fast-reject path.
+#
+# NEEDS CALIBRATION against your real 15-document collection -- this number
+# is a starting point, not a validated value. Use calibrate_relevance.py
+# (companion script) to check real score distributions on your own machine
+# before trusting this in front of anyone else.
+RELEVANCE_THRESHOLD = 0.75
+
+OUT_OF_SCOPE_MESSAGE = (
+    "សូមអភ័យទោស ខ្ញុំមិនមានព័ត៌មានទាក់ទងនឹងសំណួរនេះទេ។ "
+    "ខ្ញុំអាចឆ្លើយបានតែសំណួរទាក់ទងនឹងគោលការណ៍ HR/IT របស់ក្រុមហ៊ុនប៉ុណ្ណោះ។\n\n"
+    "Sorry, I don't have information related to that question. "
+    "I can only answer questions about company HR/IT policies."
+)
+
 print("Loading embedding model...")
 embed_model = SentenceTransformer(EMBEDDING_MODEL)
 
@@ -47,6 +69,17 @@ print(f"Connecting to knowledge base at {DB_PATH}...")
 milvus_client = MilvusClient(DB_PATH)
 milvus_client.load_collection(COLLECTION_NAME)
 print(f"Collection '{COLLECTION_NAME}' loaded and ready.")
+
+# Sanity check: the relevance gate below assumes COSINE or IP metric, where a
+# HIGHER distance score means MORE similar. If this collection actually uses
+# L2, that assumption is backwards and the gate will do the opposite of what
+# it's supposed to -- printed once at startup so it's impossible to miss.
+try:
+    _collection_info = milvus_client.describe_collection(COLLECTION_NAME)
+    print(f"Collection metric info (verify this is COSINE or IP, not L2): {_collection_info}")
+except Exception as _e:
+    print(f"Could not verify collection metric type automatically: {_e}")
+    print("Manually confirm via your ingest script before trusting RELEVANCE_THRESHOLD.")
 
 print(f"Connecting to vLLM at {VLLM_INTERNAL_URL}...")
 if VLLM_INTERNAL_URL.startswith("https://") and VLLM_CA_BUNDLE:
@@ -93,6 +126,17 @@ def get_response(message: str, history: list, model_choice: str) -> str:
     model_id = MODEL_DISPLAY_MAP.get(model_choice, "sealion")
 
     retrieved = retrieve(message)
+
+    # Relevance gate: check BEFORE building any prompt or calling the LLM.
+    # An empty retrieval result, or a top score below threshold, means this
+    # question likely isn't answerable from the knowledge base -- reject
+    # fast and honestly instead of letting the model improvise.
+    top_score = retrieved[0]["distance"] if retrieved else 0.0
+    print(f"[relevance] query={message[:60]!r} top_score={top_score:.4f} threshold={RELEVANCE_THRESHOLD}")
+
+    if not retrieved or top_score < RELEVANCE_THRESHOLD:
+        return OUT_OF_SCOPE_MESSAGE
+
     system_prompt, sources = build_augmented_prompt(message, retrieved)
 
     # history is already a list of {"role": ..., "content": ...} dicts
