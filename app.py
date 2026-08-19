@@ -12,6 +12,7 @@ stable, lower-level API, less likely to surprise us again.
 
 import os
 import gradio as gr
+import httpx
 from openai import OpenAI
 from pymilvus import MilvusClient
 from sentence_transformers import SentenceTransformer
@@ -24,6 +25,15 @@ TOP_K = 3
 VLLM_INTERNAL_URL = os.environ.get(
     "VLLM_URL", "http://vllm-sealion.model-serving.svc.cluster.local:8000/v1"
 )
+
+# Scoped CA trust for the vLLM connection specifically -- deliberately NOT
+# using SSL_CERT_FILE/REQUESTS_CA_BUNDLE process-wide env vars, since those
+# REPLACE Python's default trust store rather than extend it, which broke
+# unrelated HuggingFace Hub downloads (the embedding model fetch) the first
+# time this was attempted. This httpx.Client is scoped to vllm_client only --
+# every other HTTPS call in this process (HuggingFace Hub included) keeps
+# using the normal system trust store, completely untouched.
+VLLM_CA_BUNDLE = os.environ.get("VLLM_CA_BUNDLE")
 
 MODEL_DISPLAY_MAP = {
     "Standard": "sealion",
@@ -39,7 +49,12 @@ milvus_client.load_collection(COLLECTION_NAME)
 print(f"Collection '{COLLECTION_NAME}' loaded and ready.")
 
 print(f"Connecting to vLLM at {VLLM_INTERNAL_URL}...")
-vllm_client = OpenAI(base_url=VLLM_INTERNAL_URL, api_key="not-needed")
+if VLLM_INTERNAL_URL.startswith("https://") and VLLM_CA_BUNDLE:
+    print(f"Using scoped CA bundle for vLLM TLS verification: {VLLM_CA_BUNDLE}")
+    vllm_http_client = httpx.Client(verify=VLLM_CA_BUNDLE)
+    vllm_client = OpenAI(base_url=VLLM_INTERNAL_URL, api_key="not-needed", http_client=vllm_http_client)
+else:
+    vllm_client = OpenAI(base_url=VLLM_INTERNAL_URL, api_key="not-needed")
 
 
 def retrieve(query: str, top_k: int = TOP_K):
