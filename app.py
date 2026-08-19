@@ -86,7 +86,19 @@ except Exception as _e:
 print(f"Connecting to vLLM at {VLLM_INTERNAL_URL}...")
 if VLLM_INTERNAL_URL.startswith("https://") and VLLM_CA_BUNDLE:
     print(f"Using scoped CA bundle for vLLM TLS verification: {VLLM_CA_BUNDLE}")
-    vllm_http_client = httpx.Client(verify=VLLM_CA_BUNDLE)
+    # Explicitly matching the OpenAI SDK's own generous default (read=600s,
+    # sized for slow LLM generation) rather than leaving the underlying
+    # httpx.Client on its bare 5s default. NOTE: a direct reproduction test
+    # found the bare 5s default did NOT actually cause a failure against a
+    # 7s-delayed response -- so this is a safe, sensible alignment with the
+    # SDK's own intended behavior, but NOT a confirmed fix for the specific
+    # "Connection error" seen in production. The real cause of that is still
+    # unknown -- see the improved exception logging below, which is the
+    # actual next diagnostic step.
+    vllm_http_client = httpx.Client(
+        verify=VLLM_CA_BUNDLE,
+        timeout=httpx.Timeout(connect=5.0, read=600.0, write=600.0, pool=600.0),
+    )
     vllm_client = OpenAI(base_url=VLLM_INTERNAL_URL, api_key="not-needed", http_client=vllm_http_client)
 else:
     vllm_client = OpenAI(base_url=VLLM_INTERNAL_URL, api_key="not-needed")
@@ -101,6 +113,32 @@ def retrieve(query: str, top_k: int = TOP_K):
         output_fields=["text", "source"],
     )
     return results[0]
+
+
+def extract_text(message) -> str:
+    """
+    Normalize a Gradio chat message to plain text.
+
+    Found via real debug logs: Gradio's chatbot history 'content' field was
+    observed coming through as [{'text': '...', 'type': 'text'}] -- a list
+    of content-part dicts -- rather than a plain string, for ordinary text
+    input. This silently corrupted retrieval (the embedding model encoded
+    literal Python list/dict syntax as part of the query, measurably
+    shifting relevance scores vs. the clean text used in calibration) and
+    very likely broke the actual vLLM call outright: the OpenAI client
+    validates `content` client-side before ever sending a request, so a
+    malformed value here can throw a *local* exception that the code was
+    mislabeling as a connection failure.
+    """
+    if isinstance(message, str):
+        return message
+    if isinstance(message, list):
+        return " ".join(
+            part.get("text", "")
+            for part in message
+            if isinstance(part, dict) and part.get("type") == "text"
+        ).strip()
+    return str(message)
 
 
 def build_augmented_prompt(query: str, retrieved_chunks):
@@ -158,6 +196,14 @@ def get_response(message: str, history: list, model_choice: str) -> str:
         source_note = f"\n\n📄 *Retrieved from: {', '.join(sources)}*"
         return answer + source_note
     except Exception as e:
+        # Log the REAL exception to server logs -- the generic message
+        # shown to the user was masking the actual cause (a client-side
+        # validation error, in the incident this comment refers to, not
+        # an actual network/connection failure) and made this bug take
+        # much longer to diagnose than it should have.
+        import traceback
+        print(f"[get_response] EXCEPTION type={type(e).__name__} message={e}")
+        traceback.print_exc()
         return f"⚠️ Could not reach the model server. Error: {e}"
 
 
@@ -238,7 +284,7 @@ with gr.Blocks(
     def bot_respond(history, model_choice):
         if not history or history[-1]["role"] != "user":
             return history
-        user_message = history[-1]["content"]
+        user_message = extract_text(history[-1]["content"])
         response = get_response(user_message, history[:-1], model_choice)
         history = history + [{"role": "assistant", "content": response}]
         return history
