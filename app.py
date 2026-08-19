@@ -49,11 +49,13 @@ MODEL_DISPLAY_MAP = {
 # faster for off-topic queries, not just more correct, since no LLM call
 # happens at all on the fast-reject path.
 #
-# NEEDS CALIBRATION against your real 15-document collection -- this number
-# is a starting point, not a validated value. Use calibrate_relevance.py
-# (companion script) to check real score distributions on your own machine
-# before trusting this in front of anyone else.
-RELEVANCE_THRESHOLD = 0.75
+# Calibrated 2026-08-19 against the real 15-document collection (see
+# calibrate_relevance.py output): in-scope queries scored 0.8238-0.8765,
+# out-of-scope scored 0.7344-0.8096. Set slightly below the in-scope floor
+# rather than the exact midpoint (0.8167) -- deliberately biased toward
+# rejecting borderline cases rather than risking a hallucinated answer,
+# consistent with this thesis's core no-hallucination argument.
+RELEVANCE_THRESHOLD = 0.82
 
 OUT_OF_SCOPE_MESSAGE = (
     "សូមអភ័យទោស ខ្ញុំមិនមានព័ត៌មានទាក់ទងនឹងសំណួរនេះទេ។ "
