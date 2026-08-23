@@ -11,11 +11,13 @@ stable, lower-level API, less likely to surprise us again.
 """
 
 import os
+import hashlib
 import gradio as gr
 import httpx
 from openai import OpenAI
 from pymilvus import MilvusClient
 from sentence_transformers import SentenceTransformer
+import audit_log
 
 DB_PATH = os.environ.get("MILVUS_DB_PATH", "milvus_rag.db")
 COLLECTION_NAME = "hr_it_policies"
@@ -175,6 +177,13 @@ def get_response(message: str, history: list, model_choice: str) -> str:
     print(f"[relevance] query={message[:60]!r} top_score={top_score:.4f} threshold={RELEVANCE_THRESHOLD}")
 
     if not retrieved or top_score < RELEVANCE_THRESHOLD:
+        audit_log.log_event(
+            "query_rejected",
+            model=model_id,
+            query=message,
+            relevance_score=round(top_score, 4),
+            threshold=RELEVANCE_THRESHOLD,
+        )
         return OUT_OF_SCOPE_MESSAGE
 
     system_prompt, sources = build_augmented_prompt(message, retrieved)
@@ -194,6 +203,14 @@ def get_response(message: str, history: list, model_choice: str) -> str:
         )
         answer = response.choices[0].message.content
         source_note = f"\n\n📄 *Retrieved from: {', '.join(sources)}*"
+        audit_log.log_event(
+            "query_answered",
+            model=model_id,
+            query=message,
+            relevance_score=round(top_score, 4),
+            sources=sources,
+            response_hash=hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+        )
         return answer + source_note
     except Exception as e:
         # Log the REAL exception to server logs -- the generic message
@@ -204,6 +221,14 @@ def get_response(message: str, history: list, model_choice: str) -> str:
         import traceback
         print(f"[get_response] EXCEPTION type={type(e).__name__} message={e}")
         traceback.print_exc()
+        audit_log.log_event(
+            "query_error",
+            model=model_id,
+            query=message,
+            relevance_score=round(top_score, 4),
+            error_type=type(e).__name__,
+            error_message=str(e),
+        )
         return f"⚠️ Could not reach the model server. Error: {e}"
 
 
