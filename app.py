@@ -17,7 +17,7 @@ from openai import OpenAI
 from pymilvus import MilvusClient
 from sentence_transformers import SentenceTransformer
 
-DB_PATH = "milvus_rag.db"
+DB_PATH = os.environ.get("MILVUS_DB_PATH", "milvus_rag.db")
 COLLECTION_NAME = "hr_it_policies"
 EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
 TOP_K = 3
